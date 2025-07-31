@@ -1,11 +1,20 @@
-# main.py - Versão melhorada com drag and drop aprimorado e novas funcionalidades
+# main.py - FCTBI Respostas Rápidas - Versão Otimizada
+"""
+FCTBI - Ferramenta de Cópia de Textos para Bianca e Interação
+Aplicativo para gerenciar e acessar rapidamente respostas pré-definidas.
+
+Autor: Pablo Bernar
+Versão: 2.0 - Otimizada com boas práticas
+"""
+
 import sys
 import json
 import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple, Union
+from dataclasses import dataclass, field
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QPushButton, QInputDialog, QMenu,
@@ -26,23 +35,33 @@ from PyQt5.QtCore import (
 # Importação de validação de seções
 from special_effects import validate_section_name
 
-# --- FUNÇÃO PARA ENCONTRAR RECURSOS ---
-def resource_path(relative_path):
-    """ Obtém o caminho absoluto para o recurso, funciona para dev e para PyInstaller """
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+# =============================================================================
+# CONSTANTES E CONFIGURAÇÕES
+# =============================================================================
 
-# --- Configurações ---
-APP_DATA_DIR = Path.home() / "Documents" / "FCTBI_data"
-DATA_FILE = str(APP_DATA_DIR / "respostas.json")
-BACKUP_FILE = str(APP_DATA_DIR / "respostas_backup.json")
-CONFIG_FILE = str(APP_DATA_DIR / "config.json")
-STATS_FILE = str(APP_DATA_DIR / "stats.json")
-FONT_FILE = "BLMelody-Regular.otf"
-APP_FONT_NAME = "BL Melody Regular"
+@dataclass
+class AppConfig:
+    """Configurações da aplicação"""
+    APP_DATA_DIR: Path = field(default_factory=lambda: Path.home() / "Documents" / "FCTBI_data")
+    DATA_FILE: str = field(init=False)
+    BACKUP_FILE: str = field(init=False)
+    CONFIG_FILE: str = field(init=False)
+    STATS_FILE: str = field(init=False)
+    FONT_FILE: str = "BLMelody-Regular.otf"
+    APP_FONT_NAME: str = "BL Melody Regular"
+    WINDOW_WIDTH: int = 480
+    WINDOW_HEIGHT: int = 720
+    MIN_WINDOW_WIDTH: int = 420
+    MIN_WINDOW_HEIGHT: int = 580
+    
+    def __post_init__(self):
+        self.DATA_FILE = str(self.APP_DATA_DIR / "respostas.json")
+        self.BACKUP_FILE = str(self.APP_DATA_DIR / "respostas_backup.json")
+        self.CONFIG_FILE = str(self.APP_DATA_DIR / "config.json")
+        self.STATS_FILE = str(self.APP_DATA_DIR / "stats.json")
+
+# Instância global de configuração
+CONFIG = AppConfig()
 
 # Temas modernizados
 THEMES = {
@@ -76,17 +95,79 @@ THEMES = {
     }
 }
 
-WINDOW_WIDTH = 480
-WINDOW_HEIGHT = 720
-MIN_WINDOW_WIDTH = 420
-MIN_WINDOW_HEIGHT = 580
+# =============================================================================
+# UTILITÁRIOS
+# =============================================================================
+
+def resource_path(relative_path: str) -> str:
+    """
+    Obtém o caminho absoluto para o recurso, funciona para dev e para PyInstaller
+    
+    Args:
+        relative_path: Caminho relativo do recurso
+        
+    Returns:
+        Caminho absoluto do recurso
+    """
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+def safe_json_load(file_path: str, default_data: Any) -> Any:
+    """
+    Carrega dados JSON de forma segura
+    
+    Args:
+        file_path: Caminho do arquivo
+        default_data: Dados padrão em caso de erro
+        
+    Returns:
+        Dados carregados ou dados padrão
+    """
+    try:
+        if not os.path.exists(file_path):
+            return default_data
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Erro ao carregar {file_path}: {e}")
+        return default_data
+
+def safe_json_save(file_path: str, data: Any) -> bool:
+    """
+    Salva dados JSON de forma segura
+    
+    Args:
+        file_path: Caminho do arquivo
+        data: Dados para salvar
+        
+    Returns:
+        True se salvou com sucesso, False caso contrário
+    """
+    try:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        return True
+    except IOError as e:
+        print(f"Erro ao salvar {file_path}: {e}")
+        return False
+
+# =============================================================================
+# GERENCIADORES DE DADOS
+# =============================================================================
 
 class ConfigManager:
+    """Gerenciador de configurações da aplicação"""
+    
     def __init__(self, config_file: str):
         self.config_file = config_file
         self.config = self._load_config()
 
     def _load_config(self) -> Dict[str, Any]:
+        """Carrega configurações do arquivo"""
         default_config = {
             "theme": "light",
             "auto_backup": True,
@@ -95,48 +176,45 @@ class ConfigManager:
             "play_copy_sound": False,
             "sort_responses_by": "creation",  # creation, alphabetical, usage
             "window_position": None,
-            "window_size": [WINDOW_WIDTH, WINDOW_HEIGHT]
+            "window_size": [CONFIG.WINDOW_WIDTH, CONFIG.WINDOW_HEIGHT]
         }
         
-        if not os.path.exists(self.config_file):
-            self.save_config(default_config)
-            return default_config
-            
-        try:
-            with open(self.config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                # Merge com default para garantir todas as chaves
-                for key, value in default_config.items():
-                    if key not in config:
-                        config[key] = value
-                return config
-        except (json.JSONDecodeError, IOError):
-            return default_config
+        config = safe_json_load(self.config_file, default_config)
+        
+        # Merge com default para garantir todas as chaves
+        for key, value in default_config.items():
+            if key not in config:
+                config[key] = value
+                
+        return config
 
-    def save_config(self, config: Dict[str, Any] = None) -> bool:
-        try:
-            config_to_save = config or self.config
-            with open(self.config_file, 'w', encoding='utf-8') as f:
-                json.dump(config_to_save, f, ensure_ascii=False, indent=4)
+    def save_config(self, config: Optional[Dict[str, Any]] = None) -> bool:
+        """Salva configurações no arquivo"""
+        config_to_save = config or self.config
+        if safe_json_save(self.config_file, config_to_save):
             if config:
                 self.config = config
             return True
-        except IOError:
-            return False
+        return False
 
-    def get(self, key: str, default=None):
+    def get(self, key: str, default: Any = None) -> Any:
+        """Obtém valor de configuração"""
         return self.config.get(key, default)
 
-    def set(self, key: str, value):
+    def set(self, key: str, value: Any) -> None:
+        """Define valor de configuração"""
         self.config[key] = value
         self.save_config()
 
 class StatsManager:
+    """Gerenciador de estatísticas de uso"""
+    
     def __init__(self, stats_file: str):
         self.stats_file = stats_file
         self.stats = self._load_stats()
 
     def _load_stats(self) -> Dict[str, Any]:
+        """Carrega estatísticas do arquivo"""
         default_stats = {
             "response_usage": {},  # {texto: count}
             "section_usage": {},   # {section: count}
@@ -146,26 +224,20 @@ class StatsManager:
             "deleted_responses": 0
         }
         
+        stats = safe_json_load(self.stats_file, default_stats)
+        
+        # Salvar default se arquivo não existia
         if not os.path.exists(self.stats_file):
-            with open(self.stats_file, 'w', encoding='utf-8') as f:
-                json.dump(default_stats, f)
-            return default_stats
+            safe_json_save(self.stats_file, default_stats)
             
-        try:
-            with open(self.stats_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, IOError):
-            return default_stats
+        return stats
 
     def save_stats(self) -> bool:
-        try:
-            with open(self.stats_file, 'w', encoding='utf-8') as f:
-                json.dump(self.stats, f, ensure_ascii=False, indent=4)
-            return True
-        except IOError:
-            return False
+        """Salva estatísticas no arquivo"""
+        return safe_json_save(self.stats_file, self.stats)
 
-    def record_copy(self, text: str, section: str):
+    def record_copy(self, text: str, section: str) -> None:
+        """Registra uma cópia de resposta"""
         self.stats["total_copies"] += 1
         self.stats["response_usage"][text] = self.stats["response_usage"].get(text, 0) + 1
         self.stats["section_usage"][section] = self.stats["section_usage"].get(section, 0) + 1
@@ -175,22 +247,271 @@ class StatsManager:
         
         self.save_stats()
 
-    def record_response_created(self):
+    def record_response_created(self) -> None:
+        """Registra criação de resposta"""
         self.stats["created_responses"] += 1
         self.save_stats()
 
-    def record_response_deleted(self):
+    def record_response_deleted(self) -> None:
+        """Registra remoção de resposta"""
         self.stats["deleted_responses"] += 1
         self.save_stats()
 
-    def get_most_used_responses(self, limit: int = 10) -> List[tuple]:
+    def get_most_used_responses(self, limit: int = 10) -> List[Tuple[str, int]]:
         """Retorna lista de (texto, uso) das respostas mais usadas"""
         return sorted(self.stats["response_usage"].items(), 
                      key=lambda x: x[1], reverse=True)[:limit]
 
+class DataManager:
+    """Gerenciador de dados das respostas"""
+    
+    def __init__(self, data_file: str):
+        self.data_file = data_file
+        self.data = self._load_data()
+
+    def _load_data(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Carrega dados das respostas"""
+        default_data = {"Geral": []}
+        
+        if not os.path.exists(self.data_file):
+            safe_json_save(self.data_file, default_data)
+            return default_data
+            
+        try:
+            with open(self.data_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            if not data:
+                return default_data
+                
+            # Migração de formato antigo (lista) para novo (dicionário)
+            if isinstance(data, list):
+                migrated = {
+                    "Geral": [
+                        {"texto": item, "data": datetime.now().isoformat()} 
+                        for item in data
+                    ]
+                }
+                safe_json_save(self.data_file, migrated)
+                return migrated
+                
+            return data
+            
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Erro ao carregar dados: {e}")
+            # Tentar usar backup se existir
+            if os.path.exists(CONFIG.BACKUP_FILE):
+                backup_data = safe_json_load(CONFIG.BACKUP_FILE, default_data)
+                if backup_data != default_data:
+                    return backup_data
+            return default_data
+
+    def save(self) -> bool:
+        """Salva dados no arquivo com backup automático"""
+        try:
+            if os.path.exists(self.data_file): 
+                # Criar backup com timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_name = f"{CONFIG.BACKUP_FILE}_{timestamp}"
+                shutil.copy2(self.data_file, backup_name)
+                
+                # Manter apenas os 5 backups mais recentes
+                backup_dir = Path(self.data_file).parent
+                backup_files = sorted(backup_dir.glob("respostas_backup.json_*"))
+                if len(backup_files) > 5:
+                    for old_backup in backup_files[:-5]:
+                        old_backup.unlink()
+                        
+            return safe_json_save(self.data_file, self.data)
+        except IOError as e:
+            print(f"Erro ao salvar dados: {e}")
+            return False
+
+    def add_section(self, section_name: str) -> bool:
+        """Adiciona nova seção"""
+        if section_name and section_name not in self.data:
+            self.data[section_name] = []
+            return self.save()
+        return False
+
+    def rename_section(self, old_name: str, new_name: str) -> bool:
+        """Renomeia uma seção"""
+        if (old_name not in self.data or 
+            new_name in self.data or 
+            not new_name):
+            return False
+            
+        self.data[new_name] = self.data.pop(old_name)
+        return self.save()
+
+    def remove_section(self, section_name: str) -> bool:
+        """Remove uma seção"""
+        if len(self.data) <= 1 or section_name not in self.data:
+            return False
+            
+        del self.data[section_name]
+        return self.save()
+
+    def add_response(self, section_name: str, text: str) -> bool:
+        """Adiciona nova resposta"""
+        if section_name not in self.data or not text:
+            return False
+            
+        self.data[section_name].append({
+            "texto": text, 
+            "data": datetime.now().isoformat()
+        })
+        return self.save()
+
+    def edit_response(self, section_name: str, old_text: str, new_text: str) -> bool:
+        """Edita uma resposta existente"""
+        if section_name not in self.data or not new_text:
+            return False
+            
+        for item in self.data[section_name]:
+            if item["texto"] == old_text:
+                item["texto"] = new_text
+                item["data"] = datetime.now().isoformat()
+                return self.save()
+        return False
+
+    def duplicate_response(self, section_name: str, text: str) -> bool:
+        """Duplica uma resposta"""
+        if section_name not in self.data:
+            return False
+            
+        new_text = f"{text} (cópia)"
+        counter = 1
+        while any(item["texto"] == new_text for item in self.data[section_name]):
+            new_text = f"{text} (cópia {counter})"
+            counter += 1
+            
+        return self.add_response(section_name, new_text)
+
+    def remove_response(self, section_name: str, text: str) -> bool:
+        """Remove uma resposta"""
+        if section_name not in self.data:
+            return False
+            
+        self.data[section_name] = [
+            item for item in self.data[section_name] 
+            if item["texto"] != text
+        ]
+        return self.save()
+
+    def reorder_sections(self, new_order: List[str]) -> bool:
+        """Reordena seções"""
+        if set(new_order) != set(self.data.keys()):
+            return False
+            
+        self.data = {section: self.data[section] for section in new_order}
+        return self.save()
+
+    def reorder_responses(self, section_name: str, new_order: List[str]) -> bool:
+        """Reordena respostas em uma seção"""
+        if section_name not in self.data:
+            return False
+
+        item_map = {item["texto"]: item for item in self.data[section_name]}
+        new_list = [item_map[text] for text in new_order if text in item_map]
+        
+        # Adicionar itens que não estão na nova ordem
+        new_order_set = set(new_order)
+        for text, item in item_map.items():
+            if text not in new_order_set:
+                new_list.append(item)
+
+        self.data[section_name] = new_list
+        return self.save()
+
+    def sort_responses(self, section_name: str, sort_by: str, usage_stats: Dict[str, int]) -> bool:
+        """Ordena respostas por critério especificado"""
+        if section_name not in self.data:
+            return False
+            
+        responses = self.data[section_name]
+        
+        if sort_by == "alphabetical":
+            responses.sort(key=lambda x: x["texto"].lower())
+        elif sort_by == "creation":
+            responses.sort(key=lambda x: x.get("data", ""))
+        elif sort_by == "usage":
+            responses.sort(key=lambda x: usage_stats.get(x["texto"], 0), reverse=True)
+            
+        return self.save()
+
+    def export_data(self, file_path: str, section_name: Optional[str] = None) -> bool:
+        """Exporta dados para arquivo"""
+        try:
+            if section_name and section_name in self.data:
+                export_data = {section_name: self.data[section_name]}
+            else:
+                export_data = self.data
+                
+            with open(file_path, 'w', encoding='utf-8') as f:
+                if file_path.endswith('.json'):
+                    json.dump(export_data, f, ensure_ascii=False, indent=4)
+                else:  # .txt
+                    for section, responses in export_data.items():
+                        f.write(f"=== {section} ===\n\n")
+                        for response in responses:
+                            f.write(f"{response['texto']}\n\n")
+                        f.write("\n" + "="*50 + "\n\n")
+            return True
+        except IOError:
+            return False
+
+    def import_data(self, file_path: str) -> bool:
+        """Importa dados de arquivo"""
+        try:
+            if file_path.endswith('.json'):
+                imported_data = safe_json_load(file_path, {})
+                
+                # Merge com dados existentes
+                for section, responses in imported_data.items():
+                    if section not in self.data:
+                        self.data[section] = []
+                    
+                    existing_texts = {r["texto"] for r in self.data[section]}
+                    for response in responses:
+                        if isinstance(response, str):
+                            response = {
+                                "texto": response, 
+                                "data": datetime.now().isoformat()
+                            }
+                        if response["texto"] not in existing_texts:
+                            self.data[section].append(response)
+                            
+            else:  # .txt
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    
+                # Processar arquivo texto simples
+                if "Geral" not in self.data:
+                    self.data["Geral"] = []
+                    
+                existing_texts = {r["texto"] for r in self.data["Geral"]}
+                lines = [line.strip() for line in content.split('\n') if line.strip()]
+                
+                for line in lines:
+                    if line not in existing_texts and not line.startswith('==='):
+                        self.data["Geral"].append({
+                            "texto": line,
+                            "data": datetime.now().isoformat()
+                        })
+                        
+            return self.save()
+        except (IOError, json.JSONDecodeError):
+            return False
+
+# =============================================================================
+# WIDGETS PERSONALIZADOS
+# =============================================================================
+
 class DragDropIndicator(QWidget):
     """Widget para mostrar onde o item será inserido durante o drag"""
-    def __init__(self, parent=None):
+    
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setFixedHeight(3)
         self.hide()
@@ -204,7 +525,9 @@ class DragDropIndicator(QWidget):
         painter.fillRect(self.rect(), gradient)
 
 class FaderWidget(QWidget):
-    def __init__(self, parent=None):
+    """Widget com animação de fade in/out"""
+    
+    def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._opacity = 1.0
         self.fade_animation = QPropertyAnimation(self, b"windowOpacity")
@@ -223,6 +546,7 @@ class FaderWidget(QWidget):
         self.setWindowOpacity(value)
 
     def fade_in(self):
+        """Anima fade in"""
         self._is_hiding = False
         self.fade_animation.stop()
         self.setWindowOpacity(0.0)
@@ -232,6 +556,7 @@ class FaderWidget(QWidget):
         self.fade_animation.start()
 
     def fade_out(self):
+        """Anima fade out"""
         self._is_hiding = True
         self.fade_animation.stop()
         self.fade_animation.setStartValue(1.0)
@@ -239,20 +564,23 @@ class FaderWidget(QWidget):
         self.fade_animation.start()
 
     def _on_fade_out_finished(self):
+        """Callback quando fade out termina"""
         if self._is_hiding:
             self.hide()
 
 class FloatingButton(FaderWidget):
+    """Botão flutuante para minimizar aplicação"""
+    
     def __init__(self, callback):
         super().__init__()
         self.callback = callback
         self.setup_ui()
 
     def setup_ui(self):
+        """Configura interface do botão flutuante"""
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedSize(70, 70)
-        # A posição será definida pela janela principal que tem acesso ao config_manager
         self.drag_position = None
         self._was_click = False
         self.setToolTip("Clique para abrir o FCTBI\nArraste para mover")
@@ -278,7 +606,7 @@ class FloatingButton(FaderWidget):
         
         # Texto
         painter.setPen(QColor("#ffffff"))
-        font = QFont(APP_FONT_NAME, 9, QFont.Bold)
+        font = QFont(CONFIG.APP_FONT_NAME, 9, QFont.Bold)
         painter.setFont(font)
         painter.drawText(self.rect(), Qt.AlignCenter, "FCTBI")
 
@@ -296,7 +624,6 @@ class FloatingButton(FaderWidget):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton and self._was_click:
-            # Chamar o callback primeiro, depois fazer fade_out
             self.callback()
             event.accept()
         else:
@@ -795,209 +1122,17 @@ class EnhancedDraggableResponseWidget(QWidget):
     def on_remove_clicked(self):
         self.main_window.remove_response(self.response_data["texto"])
 
-class DataManager:
-    def __init__(self, data_file: str):
-        self.data_file = data_file
-        self.data = self._load_data()
-
-    def _load_data(self) -> Dict[str, List[Dict[str, Any]]]:
-        default_data = {"Geral": []}
-        if not os.path.exists(self.data_file):
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(default_data, f, ensure_ascii=False, indent=4)
-            return default_data
-        try:
-            with open(self.data_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if not data: return default_data
-                if isinstance(data, list):
-                    migrated = {"Geral": [{"texto": item, "data": datetime.now().isoformat()} for item in data]}
-                    with open(self.data_file, 'w', encoding='utf-8') as f: json.dump(migrated, f)
-                    return migrated
-                return data
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Erro ao carregar dados: {e}")
-            if os.path.exists(BACKUP_FILE):
-                try:
-                    with open(BACKUP_FILE, 'r', encoding='utf-8') as f: return json.load(f)
-                except: pass
-            return default_data
-
-    def save(self) -> bool:
-        try:
-            if os.path.exists(self.data_file): 
-                # Manter múltiplos backups
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_name = f"{BACKUP_FILE}_{timestamp}"
-                shutil.copy2(self.data_file, backup_name)
-                
-                # Manter apenas os 5 backups mais recentes
-                backup_dir = Path(self.data_file).parent
-                backup_files = sorted(backup_dir.glob("respostas_backup.json_*"))
-                if len(backup_files) > 5:
-                    for old_backup in backup_files[:-5]:
-                        old_backup.unlink()
-                        
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=4)
-            return True
-        except IOError as e:
-            print(f"Erro ao salvar dados: {e}")
-            return False
-
-    def add_section(self, section_name: str) -> bool:
-        if section_name and section_name not in self.data:
-            self.data[section_name] = []
-            return self.save()
-        return False
-
-    def rename_section(self, old_name: str, new_name: str) -> bool:
-        if old_name not in self.data or new_name in self.data or not new_name: return False
-        self.data[new_name] = self.data.pop(old_name)
-        return self.save()
-
-    def remove_section(self, section_name: str) -> bool:
-        if len(self.data) <= 1 or section_name not in self.data: return False
-        del self.data[section_name]
-        return self.save()
-
-    def add_response(self, section_name: str, text: str) -> bool:
-        if section_name not in self.data or not text: return False
-        self.data[section_name].append({"texto": text, "data": datetime.now().isoformat()})
-        return self.save()
-
-    def edit_response(self, section_name: str, old_text: str, new_text: str) -> bool:
-        if section_name not in self.data or not new_text: return False
-        for item in self.data[section_name]:
-            if item["texto"] == old_text:
-                item["texto"] = new_text
-                item["data"] = datetime.now().isoformat()
-                return self.save()
-        return False
-
-    def duplicate_response(self, section_name: str, text: str) -> bool:
-        if section_name not in self.data: return False
-        new_text = f"{text} (cópia)"
-        counter = 1
-        while any(item["texto"] == new_text for item in self.data[section_name]):
-            new_text = f"{text} (cópia {counter})"
-            counter += 1
-        return self.add_response(section_name, new_text)
-
-    def remove_response(self, section_name: str, text: str) -> bool:
-        if section_name not in self.data: return False
-        self.data[section_name] = [item for item in self.data[section_name] if item["texto"] != text]
-        return self.save()
-
-    def reorder_sections(self, new_order: List[str]) -> bool:
-        if set(new_order) != set(self.data.keys()): return False
-        self.data = {section: self.data[section] for section in new_order}
-        return self.save()
-
-    def reorder_responses(self, section_name: str, new_order: List[str]) -> bool:
-        if section_name not in self.data:
-            return False
-
-        item_map = {item["texto"]: item for item in self.data[section_name]}
-        new_list = [item_map[text] for text in new_order if text in item_map]
-        
-        new_order_set = set(new_order)
-        for text, item in item_map.items():
-            if text not in new_order_set:
-                new_list.append(item)
-
-        self.data[section_name] = new_list
-        return self.save()
-
-    def sort_responses(self, section_name: str, sort_by: str, usage_stats: dict) -> bool:
-        """Ordena respostas por critério especificado"""
-        if section_name not in self.data:
-            return False
-            
-        responses = self.data[section_name]
-        
-        if sort_by == "alphabetical":
-            responses.sort(key=lambda x: x["texto"].lower())
-        elif sort_by == "creation":
-            responses.sort(key=lambda x: x.get("data", ""))
-        elif sort_by == "usage":
-            responses.sort(key=lambda x: usage_stats.get(x["texto"], 0), reverse=True)
-            
-        return self.save()
-
-    def export_data(self, file_path: str, section_name: str = None) -> bool:
-        """Exporta dados para arquivo"""
-        try:
-            if section_name and section_name in self.data:
-                export_data = {section_name: self.data[section_name]}
-            else:
-                export_data = self.data
-                
-            with open(file_path, 'w', encoding='utf-8') as f:
-                if file_path.endswith('.json'):
-                    json.dump(export_data, f, ensure_ascii=False, indent=4)
-                else:  # .txt
-                    for section, responses in export_data.items():
-                        f.write(f"=== {section} ===\n\n")
-                        for response in responses:
-                            f.write(f"{response['texto']}\n\n")
-                        f.write("\n" + "="*50 + "\n\n")
-            return True
-        except IOError:
-            return False
-
-    def import_data(self, file_path: str) -> bool:
-        """Importa dados de arquivo"""
-        try:
-            if file_path.endswith('.json'):
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    imported_data = json.load(f)
-                    
-                # Merge com dados existentes
-                for section, responses in imported_data.items():
-                    if section not in self.data:
-                        self.data[section] = []
-                    
-                    existing_texts = {r["texto"] for r in self.data[section]}
-                    for response in responses:
-                        if isinstance(response, str):
-                            response = {"texto": response, "data": datetime.now().isoformat()}
-                        if response["texto"] not in existing_texts:
-                            self.data[section].append(response)
-                            
-            else:  # .txt
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    
-                # Processar arquivo texto simples
-                if "Geral" not in self.data:
-                    self.data["Geral"] = []
-                    
-                existing_texts = {r["texto"] for r in self.data["Geral"]}
-                lines = [line.strip() for line in content.split('\n') if line.strip()]
-                
-                for line in lines:
-                    if line not in existing_texts and not line.startswith('==='):
-                        self.data["Geral"].append({
-                            "texto": line,
-                            "data": datetime.now().isoformat()
-                        })
-                        
-            return self.save()
-        except (IOError, json.JSONDecodeError):
-            return False
-
 class RespostaRapidaApp(QMainWindow, FaderWidget):
     def __init__(self):
         QMainWindow.__init__(self)
         FaderWidget.__init__(self)
 
-        APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG.APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
         
         # Managers
-        self.config_manager = ConfigManager(CONFIG_FILE)
-        self.stats_manager = StatsManager(STATS_FILE)
-        self.data_manager = DataManager(DATA_FILE)
+        self.config_manager = ConfigManager(CONFIG.CONFIG_FILE)
+        self.stats_manager = StatsManager(CONFIG.STATS_FILE)
+        self.data_manager = DataManager(CONFIG.DATA_FILE)
         
         self.current_section = list(self.data_manager.data.keys())[0] if self.data_manager.data else "Geral"
         self.search_filter = ""
@@ -1023,18 +1158,12 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         # Garantir que a bola flutuante seja sempre visível quando necessário
         self.floating_button.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         
-        # Restaurar posição da bola flutuante se existir
-        floating_pos = self.config_manager.get("floating_button_position")
-        if floating_pos:
-            self.floating_button.move(floating_pos[0], floating_pos[1])
-        else:
-            # Posição padrão no canto inferior direito
-            screen = QApplication.primaryScreen().geometry()
-            self.floating_button.move(screen.width() - 90, screen.height() - 90)
+        # Posicionar bola flutuante
+        self._position_floating_button()
 
         # Restaurar posição e tamanho da janela
         window_pos = self.config_manager.get("window_position")
-        window_size = self.config_manager.get("window_size", [WINDOW_WIDTH, WINDOW_HEIGHT])
+        window_size = self.config_manager.get("window_size", [CONFIG.WINDOW_WIDTH, CONFIG.WINDOW_HEIGHT])
         
         if window_pos:
             self.move(window_pos[0], window_pos[1])
@@ -1044,30 +1173,28 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         self.update_responses_ui()
 
     def setup_timers(self):
-        """Configura timers para backup automático"""
+        """Configura timers para backup automático e verificação da bola flutuante"""
+        # Timer para backup automático
         if self.config_manager.get("auto_backup"):
             self.backup_timer = QTimer()
-            self.backup_timer.timeout.connect(self.auto_backup)
+            self.backup_timer.timeout.connect(self.data_manager.save)
             interval = self.config_manager.get("backup_interval", 60) * 60000  # converter para ms
             self.backup_timer.start(interval)
         
-        # Timer para verificar se a bola flutuante deve estar visível
+        # Timer para verificar visibilidade da bola flutuante
         self.floating_check_timer = QTimer()
-        self.floating_check_timer.timeout.connect(self.check_floating_button_visibility)
+        self.floating_check_timer.timeout.connect(self._update_floating_button_visibility)
         self.floating_check_timer.start(1000)  # Verificar a cada segundo
 
-    def auto_backup(self):
-        """Realiza backup automático"""
-        self.data_manager.save()
-
-    def check_floating_button_visibility(self):
-        """Verifica se a bola flutuante deve estar visível"""
-        # Se a janela principal não está visível, a bola flutuante deve estar visível
-        if not self.isVisible() and not self.floating_button.isVisible():
+    def _update_floating_button_visibility(self):
+        """Atualiza visibilidade da bola flutuante baseado no estado da janela principal"""
+        main_visible = self.isVisible()
+        floating_visible = self.floating_button.isVisible()
+        
+        if not main_visible and not floating_visible:
             self.floating_button.show()
             self.floating_button.raise_()
-        # Se a janela principal está visível, a bola flutuante deve estar escondida
-        elif self.isVisible() and self.floating_button.isVisible():
+        elif main_visible and floating_visible:
             self.floating_button.hide()
 
     def set_selected_response(self, widget):
@@ -1149,8 +1276,8 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
 
     def setup_ui(self):
         self.setWindowTitle('FCTBI - Respostas Rápidas')
-        self.setMinimumSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
-        self.resize(WINDOW_WIDTH, WINDOW_HEIGHT)
+        self.setMinimumSize(CONFIG.MIN_WINDOW_WIDTH, CONFIG.MIN_WINDOW_HEIGHT)
+        self.resize(CONFIG.WINDOW_WIDTH, CONFIG.WINDOW_HEIGHT)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         
@@ -1344,7 +1471,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 border-bottom: 1px solid {theme['BORDER_COLOR']};
             }}
             #titleLabel {{
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 color: {theme['PRIMARY_COLOR']};
                 font-size: 18px;
                 font-weight: bold;
@@ -1374,7 +1501,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 font-size: 13px;
                 background-color: {theme['BACKGROUND']};
                 color: {theme['TEXT_COLOR']};
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
             }}
             #searchInput:focus {{ 
                 border-color: {theme['PRIMARY_COLOR']}; 
@@ -1398,7 +1525,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 background-color: {theme['BACKGROUND']};
                 color: {theme['TEXT_COLOR']};
                 min-width: 110px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 font-size: 12px;
             }}
             QComboBox:hover {{
@@ -1446,7 +1573,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 padding: 8px 14px;
                 border-radius: 12px;
                 font-size: 12px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 min-width: 70px;
             }}
             QPushButton#sectionButton:hover {{ 
@@ -1471,7 +1598,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
             #sectionInfo {{
                 color: {theme['TEXT_COLOR']};
                 font-size: 12px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 margin: 8px 0;
                 opacity: 0.8;
                 font-weight: 500;
@@ -1484,7 +1611,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 text-align: left;
                 border-radius: 10px;
                 font-size: 13px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 min-height: 24px;
             }}
             QPushButton#responseButton:hover {{ 
@@ -1533,7 +1660,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 padding: 14px;
                 border-radius: 10px;
                 font-size: 14px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
             }}
             #addButton:hover {{ 
                 background-color: {theme['ACCENT_COLOR']}; 
@@ -1573,7 +1700,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
             #emptyLabel {{
                 color: {theme['TEXT_COLOR']};
                 font-size: 13px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 font-style: italic;
                 opacity: 0.6;
                 text-align: center;
@@ -1585,7 +1712,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 border: 1px solid {theme['BORDER_COLOR']};
                 border-radius: 8px;
                 padding: 4px;
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 font-size: 12px;
             }}
             QMenu::item {{
@@ -1598,7 +1725,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 color: white;
             }}
             QGroupBox {{
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 font-weight: bold;
                 font-size: 13px;
                 color: {theme['PRIMARY_COLOR']};
@@ -1618,11 +1745,11 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 border-radius: 12px;
             }}
             QLabel {{
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 color: {theme['TEXT_COLOR']};
             }}
             QLineEdit, QTextEdit {{
-                font-family: "{APP_FONT_NAME}";
+                font-family: "{CONFIG.APP_FONT_NAME}";
                 border: 2px solid {theme['BORDER_COLOR']};
                 border-radius: 8px;
                 padding: 8px;
@@ -1721,7 +1848,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         self.show_drop_indicator(drop_position)
         
         # Scroll automático
-        self.auto_scroll_during_drag(pos)
+        self._auto_scroll_during_drag(pos)
 
     def responses_drop_event_enhanced(self, event):
         mime_text = event.mimeData().text()
@@ -1743,79 +1870,18 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         
         event.acceptProposedAction()
 
-    def calculate_section_drop_position(self, pos):
-        """Calcula a posição onde a seção será inserida"""
-        layout = self.sections_layout
-        for i in range(layout.count()):
-            item = layout.itemAt(i)
-            if item and item.widget():
-                widget = item.widget()
-                if pos.x() < widget.x() + widget.width() // 2:
-                    return i
-        return layout.count()
-
-    def get_section_at_position(self, pos):
-        """Retorna o nome da seção na posição especificada"""
-        layout = self.sections_layout
-        for i in range(layout.count()):
-            item = layout.itemAt(i)
-            if item and item.widget():
-                widget = item.widget()
-                if widget.geometry().contains(pos):
-                    return widget.text()
-        return None
-
-    def reorder_section(self, section_name, new_position):
-        """Reordena uma seção para nova posição"""
-        sections = list(self.data_manager.data.keys())
+    def _calculate_drop_position(self, pos: QPoint, layout, is_horizontal: bool = False) -> int:
+        """
+        Calcula a posição onde o item será inserido
         
-        # Encontrar índice atual
-        current_index = sections.index(section_name)
-        
-        # Verificar se a posição realmente mudou
-        if current_index == new_position:
-            return
-        
-        # Remover da posição atual
-        sections.pop(current_index)
-        
-        # Inserir na nova posição
-        if new_position >= len(sections):
-            sections.append(section_name)
-        else:
-            sections.insert(new_position, section_name)
-        
-        # Reordenar no data manager
-        if self.data_manager.reorder_sections(sections):
-            self.update_sections_ui()
-
-    def move_response_to_section(self, response_text, target_section):
-        """Move uma resposta de uma seção para outra"""
-        # Encontrar a resposta na seção atual
-        current_responses = self.data_manager.data[self.current_section]
-        response_data = None
-        
-        for item in current_responses:
-            if item["texto"] == response_text:
-                response_data = item
-                break
-        
-        if response_data:
-            # Remover da seção atual
-            self.data_manager.remove_response(self.current_section, response_text)
+        Args:
+            pos: Posição do cursor
+            layout: Layout a ser verificado
+            is_horizontal: Se True, calcula posição horizontal (para seções)
             
-            # Adicionar na nova seção
-            self.data_manager.add_response(target_section, response_text)
-            
-            # Atualizar UI
-            self.update_sections_ui()
-            self.update_responses_ui()
-
-    def calculate_drop_position(self, pos):
-        """Calcula a posição onde o item será inserido"""
-        layout = self.responses_layout
-        
-        # Se não há widgets, retornar posição 0
+        Returns:
+            Posição de inserção
+        """
         if layout.count() == 0:
             return 0
             
@@ -1825,14 +1891,110 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 widget = item.widget()
                 widget_rect = widget.geometry()
                 
-                # Verificar se o cursor está na metade superior do widget
-                if pos.y() < widget_rect.y() + widget_rect.height() // 2:
-                    return i
+                if is_horizontal:
+                    # Para seções (horizontal)
+                    if pos.x() < widget_rect.x() + widget_rect.width() // 2:
+                        return i
+                else:
+                    # Para respostas (vertical)
+                    if pos.y() < widget_rect.y() + widget_rect.height() // 2:
+                        return i
         
-        # Se chegou até aqui, inserir no final
         return layout.count()
 
-    def auto_scroll_during_drag(self, pos):
+    def _get_widget_at_position(self, pos: QPoint, layout) -> Optional[str]:
+        """
+        Retorna o texto do widget na posição especificada
+        
+        Args:
+            pos: Posição do cursor
+            layout: Layout a ser verificado
+            
+        Returns:
+            Texto do widget ou None
+        """
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item and item.widget():
+                widget = item.widget()
+                if widget.geometry().contains(pos):
+                    return widget.text()
+        return None
+
+    def _reorder_items(self, item_name: str, new_position: int, 
+                      items_list: List, save_func) -> bool:
+        """
+        Reordena itens em uma lista
+        
+        Args:
+            item_name: Nome do item a ser movido
+            new_position: Nova posição
+            items_list: Lista de itens
+            save_func: Função para salvar mudanças
+            
+        Returns:
+            True se reordenou com sucesso
+        """
+        try:
+            current_index = next(i for i, item in enumerate(items_list) 
+                               if item["texto"] == item_name)
+        except StopIteration:
+            return False
+            
+        if current_index == new_position:
+            return True
+            
+        # Remover da posição atual
+        item = items_list.pop(current_index)
+        
+        # Ajustar nova posição se necessário
+        if current_index < new_position:
+            new_position -= 1
+        
+        # Inserir na nova posição
+        if new_position >= len(items_list):
+            items_list.append(item)
+        else:
+            items_list.insert(new_position, item)
+            
+        return save_func()
+
+    def calculate_section_drop_position(self, pos: QPoint) -> int:
+        """Calcula a posição onde a seção será inserida"""
+        return self._calculate_drop_position(pos, self.sections_layout, is_horizontal=True)
+
+    def get_section_at_position(self, pos: QPoint) -> Optional[str]:
+        """Retorna o nome da seção na posição especificada"""
+        return self._get_widget_at_position(pos, self.sections_layout)
+
+    def reorder_section(self, section_name: str, new_position: int) -> None:
+        """Reordena uma seção para nova posição"""
+        sections = list(self.data_manager.data.keys())
+        
+        if self._reorder_items(section_name, new_position, sections, 
+                             lambda: self.data_manager.reorder_sections(sections)):
+            self.update_sections_ui()
+
+    def move_response_to_section(self, response_text: str, target_section: str) -> None:
+        """Move uma resposta de uma seção para outra"""
+        current_responses = self.data_manager.data[self.current_section]
+        
+        # Encontrar a resposta na seção atual
+        response_data = next((item for item in current_responses 
+                            if item["texto"] == response_text), None)
+        
+        if response_data:
+            # Remover da seção atual e adicionar na nova
+            if (self.data_manager.remove_response(self.current_section, response_text) and
+                self.data_manager.add_response(target_section, response_text)):
+                self.update_sections_ui()
+                self.update_responses_ui()
+
+    def calculate_drop_position(self, pos: QPoint) -> int:
+        """Calcula a posição onde o item será inserido"""
+        return self._calculate_drop_position(pos, self.responses_layout)
+
+    def _auto_scroll_during_drag(self, pos: QPoint) -> None:
         """Scroll automático durante drag"""
         scroll_area = self.responses_scroll
         viewport = scroll_area.viewport()
@@ -1852,84 +2014,51 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
                 scroll_area.verticalScrollBar().value() + scroll_speed
             )
 
-    def reorder_response(self, response_text, new_position):
+    def reorder_response(self, response_text: str, new_position: int) -> None:
         """Reordena uma resposta para nova posição"""
         current_responses = self.data_manager.data[self.current_section]
         
-        # Encontrar índice atual
-        current_index = None
-        for i, item in enumerate(current_responses):
-            if item["texto"] == response_text:
-                current_index = i
-                break
+        if self._reorder_items(response_text, new_position, current_responses,
+                             self.data_manager.save):
+            self.update_responses_ui()
+
+    def _move_response(self, response_text: str, direction: int) -> None:
+        """
+        Move uma resposta para cima ou baixo na lista
         
-        if current_index is None:
+        Args:
+            response_text: Texto da resposta a ser movida
+            direction: 1 para baixo, -1 para cima
+        """
+        current_responses = self.data_manager.data[self.current_section]
+        
+        try:
+            current_index = next(i for i, item in enumerate(current_responses) 
+                               if item["texto"] == response_text)
+        except StopIteration:
             return
             
-        # Verificar se a posição realmente mudou
-        if current_index == new_position:
+        new_index = current_index + direction
+        
+        # Verificar limites
+        if new_index < 0 or new_index >= len(current_responses):
             return
             
-        # Remover da posição atual
-        item = current_responses.pop(current_index)
-        
-        # Ajustar a nova posição se necessário
-        if current_index < new_position:
-            new_position -= 1
-        
-        # Inserir na nova posição
-        if new_position >= len(current_responses):
-            current_responses.append(item)
-        else:
-            current_responses.insert(new_position, item)
+        # Trocar posições
+        current_responses[current_index], current_responses[new_index] = \
+            current_responses[new_index], current_responses[current_index]
         
         # Salvar e atualizar UI
         if self.data_manager.save():
             self.update_responses_ui()
 
-    def move_response_up(self, response_text):
+    def move_response_up(self, response_text: str) -> None:
         """Move uma resposta para cima na lista"""
-        current_responses = self.data_manager.data[self.current_section]
-        
-        # Encontrar índice atual
-        current_index = None
-        for i, item in enumerate(current_responses):
-            if item["texto"] == response_text:
-                current_index = i
-                break
-        
-        if current_index is None or current_index == 0:
-            return  # Já está no topo ou não encontrada
-            
-        # Trocar com o item anterior
-        current_responses[current_index], current_responses[current_index - 1] = \
-            current_responses[current_index - 1], current_responses[current_index]
-        
-        # Salvar e atualizar UI
-        if self.data_manager.save():
-            self.update_responses_ui()
+        self._move_response(response_text, -1)
 
-    def move_response_down(self, response_text):
+    def move_response_down(self, response_text: str) -> None:
         """Move uma resposta para baixo na lista"""
-        current_responses = self.data_manager.data[self.current_section]
-        
-        # Encontrar índice atual
-        current_index = None
-        for i, item in enumerate(current_responses):
-            if item["texto"] == response_text:
-                current_index = i
-                break
-        
-        if current_index is None or current_index == len(current_responses) - 1:
-            return  # Já está no final ou não encontrada
-            
-        # Trocar com o item seguinte
-        current_responses[current_index], current_responses[current_index + 1] = \
-            current_responses[current_index + 1], current_responses[current_index]
-        
-        # Salvar e atualizar UI
-        if self.data_manager.save():
-            self.update_responses_ui()
+        self._move_response(response_text, 1)
 
     def toggle_clear_button(self, text):
         """Mostra/esconde botão de limpar busca"""
@@ -1995,36 +2124,41 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
             shortcut = QShortcut(QKeySequence(f"Ctrl+{i}"), self)
             shortcut.activated.connect(lambda idx=i-1: self.select_section_by_index(idx))
 
-    def select_section_by_index(self, index):
+    def select_section_by_index(self, index: int) -> None:
         """Seleciona seção pelo índice"""
         sections = list(self.data_manager.data.keys())
         if 0 <= index < len(sections):
             self.select_section(sections[index])
 
-    def duplicate_selected_response(self):
+    def _execute_on_selected_response(self, action_func) -> None:
+        """
+        Executa uma ação na resposta selecionada
+        
+        Args:
+            action_func: Função a ser executada com o texto da resposta
+        """
+        if self.selected_response_widget:
+            action_func(self.selected_response_widget.response_data["texto"])
+
+    def duplicate_selected_response(self) -> None:
         """Duplica a resposta selecionada"""
-        if self.selected_response_widget:
-            self.duplicate_response(self.selected_response_widget.response_data["texto"])
+        self._execute_on_selected_response(self.duplicate_response)
 
-    def remove_selected_response(self):
+    def remove_selected_response(self) -> None:
         """Remove a resposta selecionada"""
-        if self.selected_response_widget:
-            self.remove_response(self.selected_response_widget.response_data["texto"])
+        self._execute_on_selected_response(self.remove_response)
 
-    def edit_selected_response(self):
+    def edit_selected_response(self) -> None:
         """Edita a resposta selecionada"""
-        if self.selected_response_widget:
-            self.edit_response(self.selected_response_widget.response_data["texto"])
+        self._execute_on_selected_response(self.edit_response)
 
-    def move_selected_response_up(self):
+    def move_selected_response_up(self) -> None:
         """Move a resposta selecionada para cima"""
-        if self.selected_response_widget:
-            self.move_response_up(self.selected_response_widget.response_data["texto"])
+        self._execute_on_selected_response(self.move_response_up)
 
-    def move_selected_response_down(self):
+    def move_selected_response_down(self) -> None:
         """Move a resposta selecionada para baixo"""
-        if self.selected_response_widget:
-            self.move_response_down(self.selected_response_widget.response_data["texto"])
+        self._execute_on_selected_response(self.move_response_down)
 
     def update_sections_ui(self):
         """Atualiza a interface das seções"""
@@ -2241,15 +2375,12 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         self.activateWindow()
         self.fade_in()
 
-    def minimize_window(self):
-        """Minimiza para a bola flutuante"""
-        # Esconder a janela principal
-        self.hide()
-        
+    def _position_floating_button(self) -> None:
+        """Posiciona a bola flutuante na tela"""
         # Garantir que a bola flutuante esteja configurada corretamente
         self.floating_button.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         
-        # Usar a posição salva da bola flutuante ou posição padrão se não existir
+        # Usar a posição salva ou posição padrão
         floating_pos = self.config_manager.get("floating_button_position")
         if floating_pos:
             self.floating_button.move(floating_pos[0], floating_pos[1])
@@ -2257,14 +2388,19 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
             # Posição padrão no canto inferior direito
             screen = QApplication.primaryScreen().geometry()
             self.floating_button.move(screen.width() - 90, screen.height() - 90)
-        
-        # Mostrar a bola flutuante com um pequeno delay para garantir que seja visível
-        QTimer.singleShot(100, lambda: self.show_floating_button())
 
-    def show_floating_button(self):
+    def minimize_window(self) -> None:
+        """Minimiza para a bola flutuante"""
+        self.hide()
+        self._position_floating_button()
+        
+        # Mostrar a bola flutuante com delay para garantir visibilidade
+        QTimer.singleShot(100, self.show_floating_button)
+
+    def show_floating_button(self) -> None:
         """Mostra a bola flutuante"""
         self.floating_button.show()
-        self.floating_button.raise_()  # Garantir que fique no topo
+        self.floating_button.raise_()
         self.floating_button.fade_in()
 
     def close_window(self):
@@ -2342,27 +2478,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         event.accept()
         QApplication.quit()
 
-    def save(self) -> bool:
-        try:
-            if os.path.exists(self.data_file): 
-                # Manter múltiplos backups
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_name = f"{BACKUP_FILE}_{timestamp}"
-                shutil.copy2(self.data_file, backup_name)
-                
-                # Manter apenas os 5 backups mais recentes
-                backup_dir = Path(self.data_file).parent
-                backup_files = sorted(backup_dir.glob("respostas_backup.json_*"))
-                if len(backup_files) > 5:
-                    for old_backup in backup_files[:-5]:
-                        old_backup.unlink()
-                        
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=4)
-            return True
-        except IOError as e:
-            print(f"Erro ao salvar dados: {e}")
-            return False
+
 
 
 # --- FUNÇÃO PRINCIPAL ---
@@ -2370,7 +2486,7 @@ def main():
     app = QApplication(sys.argv)
     
     # Configurar fonte personalizada
-    font_id = QFontDatabase.addApplicationFont(resource_path(FONT_FILE))
+    font_id = QFontDatabase.addApplicationFont(resource_path(CONFIG.FONT_FILE))
     if font_id >= 0:
         font_family = QFontDatabase.applicationFontFamilies(font_id)[0]
         app.setFont(QFont(font_family, 9))
