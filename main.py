@@ -99,6 +99,34 @@ THEMES = {
 # UTILITÁRIOS
 # =============================================================================
 
+def clean_corrupted_file(file_path: str, default_data: Any) -> bool:
+    """
+    Limpa arquivo corrompido e recria com dados padrão
+    
+    Args:
+        file_path: Caminho do arquivo
+        default_data: Dados padrão para recriar
+        
+    Returns:
+        True se limpou com sucesso, False caso contrário
+    """
+    try:
+        # Fazer backup do arquivo corrompido
+        if os.path.exists(file_path):
+            backup_path = f"{file_path}.corrupted_backup"
+            shutil.copy2(file_path, backup_path)
+            print(f"Backup do arquivo corrompido criado: {backup_path}")
+        
+        # Remover arquivo corrompido
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        # Recriar com dados padrão
+        return safe_json_save(file_path, default_data)
+    except Exception as e:
+        print(f"Erro ao limpar arquivo {file_path}: {e}")
+        return False
+
 def resource_path(relative_path: str) -> str:
     """
     Obtém o caminho absoluto para o recurso, funciona para dev e para PyInstaller
@@ -129,10 +157,54 @@ def safe_json_load(file_path: str, default_data: Any) -> Any:
     try:
         if not os.path.exists(file_path):
             return default_data
-        with open(file_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
+        
+        # Tentar diferentes codificações
+        encodings = ['utf-8', 'utf-8-sig', 'utf-16', 'utf-16-le', 'utf-16-be', 'latin-1', 'cp1252']
+        
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding) as f:
+                    return json.load(f)
+            except UnicodeDecodeError:
+                continue
+            except json.JSONDecodeError:
+                continue
+        
+        # Se nenhuma codificação funcionou, tentar ler como bytes e detectar
+        try:
+            with open(file_path, 'rb') as f:
+                content = f.read()
+                # Tentar detectar BOM
+                if content.startswith(b'\xff\xfe'):
+                    # UTF-16 LE
+                    return json.loads(content.decode('utf-16-le'))
+                elif content.startswith(b'\xfe\xff'):
+                    # UTF-16 BE
+                    return json.loads(content.decode('utf-16-be'))
+                elif content.startswith(b'\xef\xbb\xbf'):
+                    # UTF-8 with BOM
+                    return json.loads(content.decode('utf-8-sig'))
+                else:
+                    # Tentar UTF-8 sem BOM
+                    return json.loads(content.decode('utf-8'))
+        except:
+            pass
+            
+        print(f"Erro ao carregar {file_path}: não foi possível decodificar o arquivo")
+        
+        # Tentar limpar o arquivo corrompido
+        if clean_corrupted_file(file_path, default_data):
+            print(f"Arquivo {file_path} foi limpo e recriado com dados padrão")
+        
+        return default_data
+        
+    except Exception as e:
         print(f"Erro ao carregar {file_path}: {e}")
+        
+        # Tentar limpar o arquivo corrompido
+        if clean_corrupted_file(file_path, default_data):
+            print(f"Arquivo {file_path} foi limpo e recriado com dados padrão")
+        
         return default_data
 
 def safe_json_save(file_path: str, data: Any) -> bool:
@@ -148,10 +220,22 @@ def safe_json_save(file_path: str, data: Any) -> bool:
     """
     try:
         os.makedirs(os.path.dirname(file_path), exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
+        
+        # Salvar com encoding UTF-8 explícito
+        with open(file_path, 'w', encoding='utf-8', newline='\n') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
+        
+        # Verificar se o arquivo foi salvo corretamente
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                json.load(f)
+        except:
+            # Se não conseguiu ler, tentar recriar o arquivo
+            with open(file_path, 'w', encoding='utf-8', newline='\n') as f:
+                json.dump(data, f, ensure_ascii=False, indent=4)
+                
         return True
-    except IOError as e:
+    except Exception as e:
         print(f"Erro ao salvar {file_path}: {e}")
         return False
 
@@ -1929,15 +2013,22 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         Args:
             item_name: Nome do item a ser movido
             new_position: Nova posição
-            items_list: Lista de itens
+            items_list: Lista de itens (strings para seções, dicionários para respostas)
             save_func: Função para salvar mudanças
             
         Returns:
             True se reordenou com sucesso
         """
         try:
-            current_index = next(i for i, item in enumerate(items_list) 
-                               if item["texto"] == item_name)
+            # Verificar se é lista de strings (seções) ou dicionários (respostas)
+            if items_list and isinstance(items_list[0], str):
+                # Lista de seções (strings)
+                current_index = next(i for i, item in enumerate(items_list) 
+                                   if item == item_name)
+            else:
+                # Lista de respostas (dicionários)
+                current_index = next(i for i, item in enumerate(items_list) 
+                                   if item["texto"] == item_name)
         except StopIteration:
             return False
             
