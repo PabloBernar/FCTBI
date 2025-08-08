@@ -260,7 +260,8 @@ class ConfigManager:
             "play_copy_sound": False,
             "sort_responses_by": "creation",  # creation, alphabetical, usage
             "window_position": None,
-            "window_size": [CONFIG.WINDOW_WIDTH, CONFIG.WINDOW_HEIGHT]
+            "window_size": [CONFIG.WINDOW_WIDTH, CONFIG.WINDOW_HEIGHT],
+            "minimize_on_focus_loss": True  # Minimizar quando clicar fora
         }
         
         config = safe_json_load(self.config_file, default_config)
@@ -758,6 +759,10 @@ class SettingsDialog(QDialog):
         self.sort_combo.setCurrentText(self.config_manager.get("sort_responses_by"))
         behavior_layout.addRow("Ordenar por:", self.sort_combo)
         
+        self.minimize_on_focus = QCheckBox()
+        self.minimize_on_focus.setChecked(self.config_manager.get("minimize_on_focus_loss"))
+        behavior_layout.addRow("Minimizar ao clicar fora:", self.minimize_on_focus)
+        
         behavior_group.setLayout(behavior_layout)
         
         # Grupo Backup
@@ -801,7 +806,8 @@ class SettingsDialog(QDialog):
             "play_copy_sound": self.play_sound.isChecked(),
             "sort_responses_by": self.sort_combo.currentText(),
             "auto_backup": self.auto_backup.isChecked(),
-            "backup_interval": self.backup_interval.value()
+            "backup_interval": self.backup_interval.value(),
+            "minimize_on_focus_loss": self.minimize_on_focus.isChecked()
         }
         
         # Preservar configurações existentes
@@ -1225,6 +1231,7 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         self.drop_indicator = None
         self.section_drop_indicator = None
         self.is_dragging = False
+        self.focus_loss_timer = None  # Timer para delay na minimização
 
         # Configurar tema
         self.current_theme = THEMES[self.config_manager.get("theme", "light")]
@@ -1269,6 +1276,11 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         self.floating_check_timer = QTimer()
         self.floating_check_timer.timeout.connect(self._update_floating_button_visibility)
         self.floating_check_timer.start(1000)  # Verificar a cada segundo
+        
+        # Timer para verificar se a janela perdeu o foco
+        self.focus_check_timer = QTimer()
+        self.focus_check_timer.timeout.connect(self._check_window_focus)
+        self.focus_check_timer.start(100)  # Verificar a cada 100ms
 
     def _update_floating_button_visibility(self):
         """Atualiza visibilidade da bola flutuante baseado no estado da janela principal"""
@@ -1280,6 +1292,53 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
             self.floating_button.raise_()
         elif main_visible and floating_visible:
             self.floating_button.hide()
+
+    def _check_window_focus(self):
+        """Verifica se a janela perdeu o foco e minimiza se necessário"""
+        # Só verificar se a funcionalidade estiver ativada
+        if not self.config_manager.get("minimize_on_focus_loss", True):
+            return
+            
+        if self.isVisible() and not self.isActiveWindow():
+            # Verificar se o mouse está fora da janela
+            mouse_pos = QCursor.pos()
+            window_rect = self.geometry()
+            
+            # Se o mouse está fora da janela e a janela não está ativa, agendar minimização
+            if not window_rect.contains(mouse_pos):
+                # Usar timer para evitar minimização acidental
+                if not self.focus_loss_timer:
+                    self.focus_loss_timer = QTimer()
+                    self.focus_loss_timer.setSingleShot(True)
+                    self.focus_loss_timer.timeout.connect(self.minimize_window)
+                
+                if not self.focus_loss_timer.isActive():
+                    self.focus_loss_timer.start(300)  # 300ms de delay
+        else:
+            # Se a janela está ativa, cancelar timer de minimização
+            if self.focus_loss_timer and self.focus_loss_timer.isActive():
+                self.focus_loss_timer.stop()
+
+    def focusOutEvent(self, event):
+        """Evento chamado quando a janela perde o foco"""
+        super().focusOutEvent(event)
+        # Minimizar quando perder o foco (clicar fora) se a funcionalidade estiver ativada
+        if self.isVisible() and self.config_manager.get("minimize_on_focus_loss", True):
+            # Usar timer para evitar minimização acidental
+            if not self.focus_loss_timer:
+                self.focus_loss_timer = QTimer()
+                self.focus_loss_timer.setSingleShot(True)
+                self.focus_loss_timer.timeout.connect(self.minimize_window)
+            
+            if not self.focus_loss_timer.isActive():
+                self.focus_loss_timer.start(200)  # 200ms de delay para focusOutEvent
+
+    def focusInEvent(self, event):
+        """Evento chamado quando a janela ganha o foco"""
+        super().focusInEvent(event)
+        # Cancelar timer de minimização quando a janela ganhar foco
+        if self.focus_loss_timer and self.focus_loss_timer.isActive():
+            self.focus_loss_timer.stop()
 
     def set_selected_response(self, widget):
         """Define o widget de resposta selecionado"""
@@ -2181,6 +2240,9 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         shortcut_search = QShortcut(QKeySequence("Ctrl+F"), self)
         shortcut_search.activated.connect(lambda: self.search_input.setFocus())
         
+        # Instalar filtro de eventos para capturar teclas e cancelar minimização
+        self.installEventFilter(self)
+        
         shortcut_new = QShortcut(QKeySequence("Ctrl+N"), self)
         shortcut_new.activated.connect(self.add_response)
         
@@ -2220,6 +2282,16 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
         sections = list(self.data_manager.data.keys())
         if 0 <= index < len(sections):
             self.select_section(sections[index])
+
+    def eventFilter(self, obj, event):
+        """Filtro de eventos para cancelar minimização quando o usuário interagir"""
+        if obj == self:
+            if event.type() in [event.KeyPress, event.MouseButtonPress, event.MouseMove]:
+                # Cancelar timer de minimização se o usuário interagir
+                if self.focus_loss_timer and self.focus_loss_timer.isActive():
+                    self.focus_loss_timer.stop()
+        
+        return super().eventFilter(obj, event)
 
     def _execute_on_selected_response(self, action_func) -> None:
         """
@@ -2500,6 +2572,10 @@ class RespostaRapidaApp(QMainWindow, FaderWidget):
 
     def mousePressEvent(self, event):
         """Permite arrastar a janela apenas pela barra de título"""
+        # Cancelar timer de minimização se o usuário interagir com a janela
+        if self.focus_loss_timer and self.focus_loss_timer.isActive():
+            self.focus_loss_timer.stop()
+            
         if event.button() == Qt.LeftButton:
             # Verificar se o clique ocorreu dentro da barra de título
             if self.title_bar.geometry().contains(event.pos()):
